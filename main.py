@@ -52,8 +52,6 @@ class StableDiffusionGenerator:
             torch.set_num_threads(1)
             torch.set_num_interop_threads(1)
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
         self.model = model_id
         self.init_image = None
         self.strength = 0.8
