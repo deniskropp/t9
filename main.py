@@ -28,7 +28,9 @@ def load_args_from_yaml(yaml_file):
 class StableDiffusionGenerator:
     device: str
     model: str
+    init_image: Image.Image
     strength: float
+    image_filename: str
     loras: list[str]
     adapter_names: list[str]
     adapter_weights: list[float]
@@ -45,11 +47,12 @@ class StableDiffusionGenerator:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.model = model_id
+        self.init_image = None
         self.strength = 0.8
+        self.image_filename = None
         self.adapter_names = []
         self.adapter_weights = []
         self.loras = []
-        self.init_image = None
         self.reset_pipe()
 
     def reset_pipe(self):
@@ -101,8 +104,8 @@ class StableDiffusionGenerator:
     def load_lora_weights(self, lora, scale=1.0):
         #assert(self.generator is None)
         self.init_pipe()
-        print('Loading', lora, scale)
-        self.loras.append(lora)
+        #print('Loading', lora, scale)
+        self.loras.append(f"{lora}:{scale}")
         self.pipe.load_lora_weights(".", weight_name=lora)
         for l in self.pipe.get_active_adapters():
             self.adapter_names.append(l)
@@ -111,6 +114,7 @@ class StableDiffusionGenerator:
     def fuse(self, lora_scale=0.5):
         #assert(self.generator is None)
         self.init_pipe()
+        self.lora_scale = lora_scale
         #print('fusing', self.adapter_names, self.adapter_weights)
         if self.adapter_names:
             self.pipe.set_adapters(self.adapter_names, adapter_weights=self.adapter_weights)
@@ -141,6 +145,8 @@ class StableDiffusionGenerator:
         image_info = {
             'model': self.model,
             'lora': self.loras,
+            'lora_scale': self.lora_scale,
+            'image': f"{self.image_filename}:{self.strength}" if self.image_filename else None,
             'prompt': prompt,
             'width': width,
             'height': height,
@@ -148,7 +154,6 @@ class StableDiffusionGenerator:
             'guidance_scale': guidance_scale,
             'timestamp': timestamp,
             'seed': seed,
-#            'image': self.init_image
         }
         with open(f"{output_path_noext}_{timestamp}.yaml", 'w') as file:
             yaml.dump(image_info, file)
@@ -286,7 +291,7 @@ def main():
         else:
             init_image = init_image.resize((args.width, args.height))
         # Set the initial image for Stable Diffusion
-        generator.set_initial_image(image=init_image, strength=image_strength)
+        generator.set_initial_image(image=init_image, strength=image_strength, filename=image_filename)
 
     # Load LoRA weights if provided
     for lora in args.lora:
