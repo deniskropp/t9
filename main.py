@@ -5,217 +5,12 @@ import json
 import os
 import yaml
 
-#import matplotlib.pyplot as plt
 from PIL import Image
-
-from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
-
-import torch
+from sd.generator import StableDiffusionGenerator
 
 
-### [(lora['name'], lora['scale']) for lora in args['loras']]
-
-def load_args_from_yaml(yaml_file):
-    with open(yaml_file, 'r') as file:
-        data = yaml.safe_load(file)
-        if ('loras' in data):
-            data['lora'] = data['loras']
-            data['loras'] = None
-        return data
-
-
-
-class StableDiffusionGenerator:
-    device: str
-    model: str
-    init_image: Image.Image
-    strength: float
-    image_filename: str
-    loras: list[str]
-    adapter_names: list[str]
-    adapter_weights: list[float]
-    generator: torch.Generator
-    pipe: StableDiffusionPipeline
-
-    def __init__(self, model_id):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Using {self.device} device")
-
-        num_threads = int(os.environ.get('NUM_THREADS', -1))
-        if num_threads < 0:
-            num_threads = os.cpu_count() or 1
-        print(f"Using {num_threads} threads")
-        if num_threads > 1:
-            torch.set_num_threads(num_threads)
-            torch.set_num_interop_threads(num_threads)
-        else:
-            torch.set_num_threads(1)
-            torch.set_num_interop_threads(1)
-
-        self.model = model_id
-        self.init_image = None
-        self.strength = 0.8
-        self.image_filename = None
-        self.adapter_names = []
-        self.adapter_weights = []
-        self.loras = []
-        self.reset_pipe()
-
-    def reset_pipe(self):
-        self.pipe = None
-
-    def init_pipe(self):
-        if (self.pipe is not None):
-            return
-
-        print(f"Using {self.device} device")
-
-        torch_dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-
-        if (os.path.isfile(self.model)):
-            if (self.init_image):
-                self.pipe = StableDiffusionImg2ImgPipeline.from_single_file(
-                    self.model,
-                    torch_dtype=torch_dtype,
-                    safety_checker=None
-                )
-            else:
-                self.pipe = StableDiffusionPipeline.from_single_file(
-                    self.model,
-                    torch_dtype=torch_dtype,
-                    safety_checker=None
-                )
-        else:
-            if (self.init_image):
-                self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                    self.model,
-                    torch_dtype=torch_dtype,
-                    safety_checker=None
-                )
-            else:
-                self.pipe = StableDiffusionPipeline.from_pretrained(
-                    self.model,
-                    torch_dtype=torch_dtype,
-                    safety_checker=None
-                )
-
-        self.pipe = self.pipe.to(self.device)
-        self.pipe.safety_checker = None
-
-    def set_initial_image(self, image, strength=0.8):
-        self.init_image = image
-        self.strength = strength
-        self.reset_pipe()
-
-    def load_lora_weights(self, lora, scale=1.0):
-        #assert(self.generator is None)
-        self.init_pipe()
-        #print('Loading', lora, scale)
-        self.loras.append(f"{lora}:{scale}")
-        self.pipe.load_lora_weights(".", weight_name=lora)
-        for l in self.pipe.get_active_adapters():
-            self.adapter_names.append(l)
-            self.adapter_weights.append(scale)
-
-    def fuse(self, lora_scale=0.5):
-        #assert(self.generator is None)
-        self.init_pipe()
-        self.lora_scale = lora_scale
-        #print('fusing', self.adapter_names, self.adapter_weights)
-        if self.adapter_names:
-            self.pipe.set_adapters(self.adapter_names, adapter_weights=self.adapter_weights)
-            self.pipe.fuse_lora(lora_scale=lora_scale, adapter_names=self.adapter_names)
-            self.pipe.unload_lora_weights()
-        self.generator = torch.Generator(device=self.device)
-
-    def generate_image(self, prompt, width, height, num_inference_steps, guidance_scale) -> Image:
-        #assert(self.generator is not None)
-        self.init_pipe()
-        return self.pipe(
-            prompt,
-            image=self.init_image,
-            strength=self.strength,
-            width=width,
-            height=height,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            generator=self.generator
-        ).images[0]
-
-    def save_image_and_info(self, image, output_path_noext, timestamp, seed,
-                            prompt, width, height, num_inference_steps, guidance_scale):
-        # Save the image content (png)
-        image.save(f"{output_path_noext}_{timestamp}.png")
-
-        # Save the image information (yaml)
-        image_info = {
-            'model': self.model,
-            'lora': self.loras,
-            'lora_scale': self.lora_scale,
-            'image': f"{self.image_filename}:{self.strength}" if self.image_filename else None,
-            'prompt': prompt,
-            'width': width,
-            'height': height,
-            'num_inference_steps': num_inference_steps,
-            'guidance_scale': guidance_scale,
-            'timestamp': timestamp,
-            'seed': seed,
-        }
-        with open(f"{output_path_noext}_{timestamp}.yaml", 'w') as file:
-            yaml.dump(image_info, file)
-
-
-    def prepare(self, seed):
-        #assert(self.generator is not None)
-        if seed is None:
-            seed = self.generator.seed()
-        else:
-            self.generator = self.generator.manual_seed(seed)
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        return seed, timestamp
-
-    def run(self, seed, timestamp, output, prompt, width, height, num_inference_steps, guidance_scale):
-        image = self.generate_image(prompt, width, height, num_inference_steps, guidance_scale)
-        self.save_image_and_info(image, f"{output}/sd_", timestamp, seed,
-                                 prompt, width, height, num_inference_steps, guidance_scale)
-        return image
-
-
-def main():
-    """
-        SD Make
-
-        Main function to run the Stable Diffusion image generation.
-
-            1. Parse the command-line arguments.
-            2. Create an instance of the StableDiffusionGenerator class.
-            3. Load the LoRA weights if provided.
-            4. Run the image generation and save the results.
-            5. Print the seed for each generated image.
-            6. Print the output path for each generated image.
-            7. Print the timestamp for each generated image.
-
-            8. TODO: Add support for multiple LoRA models.
-            9. TODO: Add support for multiple prompts.
-            10. TODO: Add support for multiple seeds.
-            11. TODO: Add support for multiple widths and heights.
-            12. TODO: Add support for multiple num_inference_steps.
-            13. TODO: Add support for multiple guidance_scales.
-            14. TODO: Add support for multiple output paths.
-            15. TODO: Add support for multiple devices.
-            16. TODO: Add support for multiple models.
-            17. TODO: Add support for multiple count.
-            18. TODO: Add support for multiple seeds.
-            19. TODO: Add support for multiple prompts.
-            20. TODO: Add support for multiple widths and heights.
-            21. TODO: Add support for multiple num_inference_steps.
-            22. TODO: Add support for multiple guidance_scales.
-
-
-            TODO: Instead of bumping up the seed, the following should be possible:
-                    args.num_inference_steps += 5   OR
-                    args.guidance_scale += 0.2
-    """
+def parse_args():
+    """Parse command-line arguments and return argparse.Namespace."""
     parser = argparse.ArgumentParser(description='Generate an image using Stable Diffusion and a LoRA model.')
     parser.add_argument('--count', type=int, default=1, help='Number of images to generate')
     parser.add_argument('--output', type=str, default='sd-output', help='Output path to save the images content and information')
@@ -230,136 +25,99 @@ def main():
     parser.add_argument('--guidance_scale', type=float, default=None, help='Guidance scale for classifier-free guidance')
     parser.add_argument('--yaml', type=str, default=None, help='Load parameters from YAML (args or sd_)')
     parser.add_argument('--image', type=str, default=None, help='Path to the input image')
+    return parser
 
-    # Parse the command-line arguments
+
+def merge_args_with_yaml(args, parser):
+    """Merge command-line args with YAML file if provided. CLI args take precedence."""
+    # Parse initial args
     yaml_args = parser.parse_args()
-
-    yaml_args.lora = []
-
-    # If a YAML file is provided, load the parameters from it
-    # The command line arguments will override the YAML file arguments
+    if yaml_args.lora is None:
+        yaml_args.lora = []
+    # Load YAML if provided
     if yaml_args.yaml:
-        yaml_data = load_args_from_yaml(yaml_args.yaml)
-        yaml_args.__dict__.update(yaml_data)
-
+        with open(yaml_args.yaml, 'r') as f:
+            yaml_data = yaml.safe_load(f)
+        if yaml_data:
+            yaml_args.__dict__.update(yaml_data)
+    # Parse again to get CLI overrides
     args = parser.parse_args()
-
-    if args.model is None:
-        args.model = yaml_args.model if yaml_args.model else 'stable-diffusion/v1-5'
-
-    if args.prompt is None:
-        args.prompt = yaml_args.prompt if yaml_args.prompt else 'a kinky hood in the forest'
-
-    if args.lora is None:
-        args.lora = []
-
+    # Set defaults and merge
+    args.model = args.model or yaml_args.model or 'stable-diffusion/v1-5'
+    args.prompt = args.prompt or yaml_args.prompt or 'a kinky hood in the forest'
+    args.lora = args.lora or []
     if yaml_args.lora:
         args.lora.extend(yaml_args.lora)
+    args.lora_scale = args.lora_scale if args.lora_scale is not None else (yaml_args.lora_scale if yaml_args.lora_scale else 1.0)
+    args.seed = args.seed if args.seed is not None else (yaml_args.seed if yaml_args.seed else None)
+    args.width = args.width if args.width is not None else (yaml_args.width if yaml_args.width else 512)
+    args.height = args.height if args.height is not None else (yaml_args.height if yaml_args.height else 512)
+    args.num_inference_steps = args.num_inference_steps if args.num_inference_steps is not None else (yaml_args.num_inference_steps if yaml_args.num_inference_steps else 20)
+    args.guidance_scale = args.guidance_scale if args.guidance_scale is not None else (yaml_args.guidance_scale if yaml_args.guidance_scale else 7.5)
+    args.image = args.image or yaml_args.image
+    args.output = args.output or yaml_args.output or 'sd-output'
+    return args, yaml_args
 
-    if args.lora_scale is None:
-        args.loras_scale = yaml_args.lora_scale if yaml_args.lora_scale else 1.0
 
-    if args.seed is None:
-        args.seed = yaml_args.seed if yaml_args.seed else None
-
-    if args.width is None:
-        args.width = yaml_args.width if yaml_args.width else 512
-
-    if args.height is None:
-        args.height = yaml_args.height if yaml_args.height else 512
-
-    if args.num_inference_steps is None:
-        args.num_inference_steps = yaml_args.num_inference_steps if yaml_args.num_inference_steps else 20
-
-    if args.guidance_scale is None:
-        args.guidance_scale = yaml_args.guidance_scale if yaml_args.guidance_scale else 7.5
-
-    # Create output directory if it does not exist
+def setup_generator(args, yaml_args):
+    """Initialize StableDiffusionGenerator and set up image and LoRA weights."""
     if not os.path.exists(args.output):
         os.makedirs(args.output)
-
-    # Use the provided model path if available, otherwise use the default path
     model_path = args.model if args.model else "./stable-diffusion/sd-v1-5.safetensors"
-
-    # Initialize the StableDiffusionGenerator with the model path
     generator = StableDiffusionGenerator(model_path)
-
-    # If an image is provided, load it and use it as the initial image for Stable Diffusion
-    if yaml_args.image is not None:
-        # Extract filename and strength from image
-        image_info = yaml_args.image.split(':')
+    # Set initial image if provided
+    image_arg = args.image or yaml_args.image
+    if image_arg:
+        image_info = image_arg.split(':')
         image_filename = image_info[0]
         image_strength = float(image_info[1]) if len(image_info) > 1 else 0.8
-        # Load the initial image and resize it to the desired width and height
         init_image = Image.open(image_filename)
         if init_image is None:
             print(f"Error: Failed to open image file {image_filename}")
         else:
             init_image = init_image.resize((args.width, args.height))
-        # Set the initial image for Stable Diffusion
-        generator.set_initial_image(image=init_image, strength=image_strength, filename=image_filename)
-
-    # Load LoRA weights if provided
+            generator.set_initial_image(image=init_image, strength=image_strength, filename=image_filename)
+    # Load LoRA weights
     for lora in args.lora:
-        # Extract filename and scale from lora
         lora_info = lora.split(':')
         lora_filename = lora_info[0]
         lora_scale = float(lora_info[1]) if len(lora_info) > 1 else 1.0
-
-        # Load LoRA weights with the extracted scale
         generator.load_lora_weights(lora_filename, lora_scale)
-
-    # Fuse the LoRA weights into the base model
     generator.fuse(lora_scale=args.lora_scale if args.lora_scale is not None else 1.0)
+    return generator
 
-    # Generate images based on the specified count
+
+def generate_images(args, generator):
+    """Generate images and print info for each."""
     for i in range(args.count):
-        # Make a timestamp and update the seed
         seed, timestamp = generator.prepare(args.seed)
-
-        # Print a newline for better readability
         print('\n----\n')
-        # Print the current date and time
         print(f"Date and time: {datetime.datetime.now()}")
-        # Print the seed for each generated image
         print(f"Seed: {args.seed}")
-        # Print the size of each generated image
         print(f"Size: {args.width}x{args.height}")
-        # Print the base model used for each generated image
-        print(f"Model: {model_path}")
-        # Print the prompt for each generated image
+        print(f"Model: {args.model}")
         print(f"Prompt: {args.prompt}")
-        # Print the initial image for each generated image
         print(f"Image: {args.image}")
-        # Print the number of denoising steps for each generated image
         print(f"Steps: {args.num_inference_steps}")
-        # Print the guidance scale for each generated image
         print(f"Guidance Scale: {args.guidance_scale}")
-        # Print the LoRA models used for each generated image
         print(f"LoRA models: {args.lora}")
-        # Print the LoRA scale used for each generated image
         print(f"LoRA scale: {args.lora_scale}")
-        # Print the seed for each generated image
         print(f"Seed: {seed}")
-        # Print the timestamp for each generated image
         print(f"Timestamp: {timestamp}")
-        # Print the output path for each generated image
         print(f"Output: {args.output}")
-        # Print the current iteration
         print(f"---- {i+1}/{args.count}\n")
-
         image = generator.run(seed, timestamp, args.output, args.prompt, args.width, args.height, args.num_inference_steps, args.guidance_scale)
-
-        # Increment the seed for the next iteration if it's not None
         if args.seed is not None:
-            args.seed+=1
-
-        # Display the image
-        #plt.imshow(image)
-        #plt.axis('off')
-        #plt.show()
+            args.seed += 1
 
 
-# Run the main function
+def run_cli():
+    """Main CLI entry point."""
+    parser = parse_args()
+    args, yaml_args = merge_args_with_yaml(None, parser)
+    generator = setup_generator(args, yaml_args)
+    generate_images(args, generator)
+
+
 if __name__ == "__main__":
-    main()
+    run_cli()
