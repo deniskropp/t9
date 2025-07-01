@@ -42,7 +42,15 @@ class StableDiffusionGenerator:
         print(f"Using {self.device} device")
 
         num_threads = int(os.environ.get('NUM_THREADS', -1))
-        torch.set_num_threads(num_threads)
+        if num_threads < 0:
+            num_threads = os.cpu_count() or 1
+        print(f"Using {num_threads} threads")
+        if num_threads > 1:
+            torch.set_num_threads(num_threads)
+            torch.set_num_interop_threads(num_threads)
+        else:
+            torch.set_num_threads(1)
+            torch.set_num_interop_threads(1)
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
