@@ -2,11 +2,16 @@ import argparse
 import datetime
 import os
 import yaml
+from typing import Optional
 from PIL import Image
 from sd.generator import StableDiffusionGenerator
 
 
 class CLI:
+    generator: Optional[StableDiffusionGenerator]
+    args: argparse.Namespace
+    yaml_args: argparse.Namespace
+
     """Command-line interface for Stable Diffusion image generation."""
     def __init__(self):
         self.parser = self._parse_args()
@@ -109,11 +114,11 @@ class CLI:
         self._generate_images()
 
 
-def run_cli():
+def main():
     """Main CLI entry point."""
     cli = CLI()
     cli.run()
 
 
 if __name__ == "__main__":
-    run_cli()
+    main()
