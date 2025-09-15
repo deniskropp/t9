@@ -2,3 +2,4 @@ diffusers
 Pillow
 torch
 pyyaml
+compel==2.1.1
