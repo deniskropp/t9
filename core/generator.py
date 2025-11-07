@@ -4,13 +4,10 @@ from typing import List, Optional, Tuple
 from PIL import Image
 import torch 
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipeline
-from diffusers.schedulers.scheduling_dpmsolver_multistep import DPMSolverMultistepScheduler
-from compel import Compel
 
 
 class StableDiffusionGenerator:
     pipeline: StableDiffusionPipeline
-    compel_parser: Compel
     device: str
     model_path: str
     initial_image: Optional[Image.Image] = None
@@ -21,7 +18,6 @@ class StableDiffusionGenerator:
         self.model_path = model_path
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.pipeline = self._load_pipeline(model_path)
-        self.compel_parser = Compel(tokenizer=self.pipeline.tokenizer, text_encoder=self.pipeline.text_encoder)
         self.loras = []
         self.initial_image = None
         self.image_strength = 0.8
@@ -33,7 +29,6 @@ class StableDiffusionGenerator:
             pipe = StableDiffusionPipeline.from_single_file(
                 model_path, torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
             )
-            pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
             pipe.to(self.device)
             # Enable memory optimizations if available
             if self.device == "cuda":
